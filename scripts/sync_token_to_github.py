@@ -156,18 +156,51 @@ def mask(t):
     return "<已配置，长度 %d，不回显片段>" % len(t)
 
 
-def gh_available():
-    """检测 gh 是否可用：先 PATH，再探测常见安装位置。"""
-    if shutil.which("gh"):
-        return True
+def gh_exe():
+    """定位 gh 可执行文件：先 PATH，再探测常见安装位置。
+
+    必须返回**绝对路径**而不是裸 "gh"：GitHub CLI 装在默认位置时常常不在 PATH 里，
+    只判断"存在"却仍用 "gh" 调用，会在写入 Secret 时才 FileNotFoundError。
+    """
+    found = shutil.which("gh")
+    if found:
+        return found
     home = os.path.expanduser("~")
     candidates = [
         r"C:\Program Files\GitHub CLI\gh.exe",
         r"C:\Program Files (x86)\GitHub CLI\gh.exe",
         os.path.join(home, "AppData", "Local", "GitHubCLI", "gh.exe"),
         os.path.join(home, "AppData", "Local", "Programs", "GitHub CLI", "gh.exe"),
+        "/opt/homebrew/bin/gh",
+        "/usr/local/bin/gh",
+        "/usr/bin/gh",
     ]
-    return any(os.path.isfile(c) for c in candidates)
+    for c in candidates:
+        if c and os.path.isfile(c):
+            return c
+    return None
+
+
+def gh_available():
+    """检测 gh 是否可用：先 PATH，再探测常见安装位置。"""
+    return gh_exe() is not None
+
+
+def gh_logged_in():
+    """gh 是否已完成授权（auth status 退出码 0）。
+
+    只看"gh 装没装"不够：装了但没 auth login 时，
+    `gh secret set` 会返回一段英文提示，用户看不出该干什么。
+    """
+    exe = gh_exe()
+    if not exe:
+        return False
+    try:
+        r = subprocess.run([exe, "auth", "status"],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return r.returncode == 0
+    except Exception:
+        return False
 
 
 def gh_set_secret(repo, name, value, dry_run=False):
@@ -177,12 +210,13 @@ def gh_set_secret(repo, name, value, dry_run=False):
       - 值经 stdin 传递，不出现在进程列表（ps）里
       - 输出只提示「已写入 Secret：<名称>」，绝不回显值或长度
     """
-    cmd = ["gh", "secret", "set", name]
-    if repo:
-        cmd += ["--repo", repo]
     if dry_run:
         print("  [dry-run] 将写入 Secret：%s" % name)
         return True
+    exe = gh_exe() or "gh"
+    cmd = [exe, "secret", "set", name]
+    if repo:
+        cmd += ["--repo", repo]
     try:
         r = subprocess.run(cmd, input=value.encode("utf-8"),
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -271,7 +305,9 @@ def print_manual_guide(secret_name, domain, repo, channels, use_rt):
     for i, (name, _) in enumerate(channels, start=2):
         print("  %d) %s" % (i, name))
     print()
-    print("接口域名（供参考，已内置默认值 www.codebuddy.cn）：%s" % domain)
+    print("接口域名：%s" % domain)
+    if domain and domain != "www.codebuddy.cn":
+        print("  ⚠️ 与脚本默认值（www.codebuddy.cn）不同，必须**同时**添加 Secret WB_DOMAIN，值为 %s" % domain)
     print()
     print("另外建议安装 gh 以获得更好的体验：https://cli.github.com/")
     print("安装后重新运行本脚本即可自动完成。")
@@ -353,6 +389,27 @@ def main():
             channels.append(("SUCCESS_NOTIFY", "true"))
         print_manual_guide(secret_name, domain, repo, channels, use_rt)
         sys.exit(0)
+
+    # gh 已安装但未登录 → 写入必然失败。放在写之前拦，别让用户看到一堆英文 stderr。
+    if not args.dry_run and not gh_logged_in():
+        print("✗ 已找到 GitHub CLI，但**尚未登录**，因此无法写入 Secrets。")
+        print()
+        print("  在你自己的终端（PowerShell / cmd / Git Bash）里执行：")
+        print('    "%s" auth login' % (gh_exe() or "gh"))
+        print("  浏览器会弹出授权页；没有弹窗时按提示打开 https://github.com/login/device")
+        print("  并输入终端给出的一次性代码。")
+        print()
+        print("  登录成功后确认一下：")
+        print('    "%s" auth status' % (gh_exe() or "gh"))
+        print("  然后重新运行本脚本即可。")
+        print()
+        print("  不想用 gh？改用环境变量提供 PAT（需 repo 写权限）：")
+        print("    set GH_TOKEN=<你的 PAT>        # PowerShell: $env:GH_TOKEN='...'")
+        print("  或直接按下面的手动指引在网页上添加 Secret。")
+        if not args.dry_run:
+            print()
+            print_manual_guide(secret_name, domain, repo, [], use_rt)
+        sys.exit(1)
 
     ok = True
     if use_rt:

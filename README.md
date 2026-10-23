@@ -110,7 +110,22 @@ python scripts/workbuddy_checkin.py --diagnose
 
 1. 点击仓库右上角 **Fork**，把本仓库复制到你的账号下。
 2. 进入你 Fork 出的仓库，按下方「配置 Secrets」添加凭据。
-3. 到 **Actions** 页面启用工作流，手动 **Run workflow** 验证一次即可。
+3. 到 **Actions** 页面，点击 **「I understand my workflows, go ahead and enable them」** 启用工作流，
+   然后手动 **Run workflow** 验证一次即可。
+
+> ⚠️ **Fork 最容易卡住的一步**：GitHub 默认**不在 fork 上运行任何工作流**。
+> 未启用时 `actions/workflows` 返回 `total_count: 0`，`gh workflow list` 是空的，
+> `gh workflow run` 报 `HTTP 404: workflow ... not found on the default branch`。
+> 用 API 查能看到真实状态：
+>
+> ```bash
+> gh api repos/<你>/<仓库>/actions/workflows --jq '.workflows[] | {id, name, state}'
+> # state 为 disabled_fork 即未启用
+> gh api -X PUT repos/<你>/<仓库>/actions/workflows/<id>/enable
+> # 再查应变为 active
+> ```
+>
+> 或者直接去 Actions 页面点那个绿色按钮，效果一致。
 
 ### 方式 B：手动新建仓库
 
@@ -316,6 +331,11 @@ A：编辑 `.github/workflows/checkin.yml` 里的 `cron` 表达式即可（UTC �
 
 **Q：一直接收不到失败提醒？**
 A：检查是否配置了任一通知通道 Secret；否则失败只体现为 Actions 页面红灯与 GitHub 邮件。
+
+**Q：前几周一直正常，突然不跑了？**
+A：两个常见原因：① 长效令牌过期（约 60 天），重跑 `sync_token_to_github.py` 续期；
+② GitHub 会对**连续 60 天无提交**的仓库自动停用定时工作流，到 Actions 页面手动 Run 一次即可恢复
+（本项目平时没有提交，这一条尤其容易中）。
 
 ---
 

@@ -53,3 +53,6 @@ desktop.ini
 # ---- 备份 ----
 _backup_*/
 *.bak
+
+# ---- 本地工具目录（含 Agent 记忆，不入库）----
+.workbuddy/
