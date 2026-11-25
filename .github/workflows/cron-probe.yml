@@ -1,8 +1,28 @@
 name: cron-probe
 
-# 临时探针：验证 fork 仓库上的 schedule 事件是否真的被调度
-# 用途：若 10 分钟内没有产生 event=schedule 的运行，则说明 fork 的 cron 不可用
-# 验证完成后请删除本文件
+# ─────────────────────────────────────────────────────────────
+#  【本文件职责】测试 —— 只验证 GitHub 的 schedule 到底会不会被派发
+#
+#  为什么需要它：
+#    本项目早期排查"定时不触发"时，一度误判为"GitHub 完全不派发 schedule"，
+#    实际原因是派发被延迟了 6~10 小时。为了把这个判断变成可观测事实，
+#    才加了这个探针：每 5 分钟产生一条 event=schedule 的运行记录，
+#    看"有没有新记录"即可确认定时机制是否还活着。
+#
+#  它做什么：
+#    · 只打印触发方式（event）和当前 UTC 时间
+#    · 用于确认 schedule 事件是否真的到达 runner
+#
+#  它不做什么（重点，别和 checkin.yml 混淆）：
+#    · 不读凭据、不执行签到、不领积分
+#    · 不发送任何通知（Server酱 / 企微 / PushPlus / Bark 一条都不会有）
+#    · 跑失败也不会产生"签到失败"告警
+#
+#  验证完就应该停用：
+#    每 5 分钟一次的 cron 非常消耗 Actions 分钟数，长期挂着没有意义。
+#    生产环境请把它设为 disabled（或直接删除本文件），
+#    只保留 checkin.yml 那一条真正的签到工作流。
+# ─────────────────────────────────────────────────────────────
 
 on:
   schedule:
@@ -14,9 +34,10 @@ permissions:
 
 jobs:
   probe:
+    name: 打印触发信息（不签到）
     runs-on: ubuntu-latest
     steps:
-      - name: 打印触发信息
+      - name: 报告本次触发的 event 与 UTC 时间
         run: |
           echo "event=${{ github.event_name }}"
           echo "utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
