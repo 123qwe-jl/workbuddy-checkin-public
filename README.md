@@ -6,6 +6,26 @@
 
 ---
 
+## 📌 本仓库包含什么：一套「测试 + 执行」
+
+本仓库里有两个工作流，职责完全不同，别搞混：
+
+| 工作流文件 | 角色 | 干什么 | 触发方式 | 会发通知吗 |
+|---|---|---|---|---|
+| `checkin.yml` | **执行** | 读凭据 → 换令牌 → 查状态 → 未签到则领取，结果写摘要并按配置推送 | `schedule`（每天 UTC 01:05）+ 手动 `workflow_dispatch` | **会**（成功 / 失败按 Secret 配置） |
+| `cron-probe.yml` | **测试** | 只打印 `event=` 和 UTC 时间，验证 GitHub 的 `schedule` 到底有没有被派发 | 每 5 分钟 `schedule` + 手动 | **不会**（不读凭据、不签到） |
+
+- **`checkin.yml` 是经实测可用的生产工作流**：连续多日 `success`，签到成功、积分正常累加；当日重复跑会被接口幂等拦下（`code=10001`），不会重复领取。
+- **`cron-probe.yml` 纯粹是排查工具**：当时为了确认「GitHub 定时到底派不派发」而加，结论是**会派发，但常延迟 6~10 小时**。它不签到、不发消息、不消耗签到次数。验证完成后应当停用或删除 —— 每 5 分钟一次的 cron 很浪费 Actions 分钟数。
+
+### 现在要直接跑签到，看哪个项目？
+
+**看生产仓库：[`123qwe-jl/workbuddy-checkin`](https://github.com/123qwe-jl/workbuddy-checkin)**
+
+那个才是日常在跑的地方（非 fork、凭据已更新、Actions 正常开启，外部定时器每天 09:05 触发，GitHub `schedule` 下午补跑）。本仓库（`workbuddy-checkin-public`）保留为**开源参考实现 + 测试示例**，它的 Actions 已停用，不会自动执行。
+
+---
+
 ## ⭐ 版本对照：你的客户端决定用哪种签到方式
 
 WorkBuddy 客户端从 **5.6.2** 起对登录态做了静态加密（AtRestEncryption）。
@@ -16,7 +36,7 @@ WorkBuddy 客户端从 **5.6.2** 起对登录态做了静态加密（AtRestEncry
 | 登录态里 `auth.accessToken` 的形态 | 明文（JWT 字符串） | **AES-256-GCM 信封**：`{"$wbEncrypted":1,"envelope":"<base64>"}` |
 | 本机能否直接读到明文 | ✅ 能 | ❌ **不能** —— 解密密钥不落盘，只在客户端进程内存里 |
 | **该配哪个 Secret** | `WB_ACCESS_TOKEN`（短效令牌直通） | **`WB_REFRESH_TOKEN`（长效令牌，强烈推荐）** |
-| 凭据有效期 | 约 2 个月 | 长效令牌约 **60 天**；轮换后旧值不会立即失效 |
+| 凭据有效期 | 约 28 天（`expiresIn` = 2419200 秒） | 长效令牌约 **30 天**（`refreshExpiresIn` = 2591999 秒）；轮换后旧值不会立即失效 |
 | 配置命令 | `python scripts/sync_token_to_github.py` | 同上（脚本会自动导出**长效令牌**） |
 | 旧版做法是否还能用 | ✅ | ❌ **把 accessToken 原样塞进 Secret 必然鉴权失败** |
 
@@ -88,7 +108,9 @@ python scripts/workbuddy_checkin.py --diagnose
 
 ```
 .
-├── .github/workflows/checkin.yml      # 工作流：定时 + 手动触发，结果写 Action 摘要
+├── .github/workflows/
+│   ├── checkin.yml                    # 【执行】定时 + 手动触发，真正签到，结果写 Action 摘要
+│   └── cron-probe.yml                 # 【测试】只验证 schedule 是否被派发，不签到、不发通知
 ├── scripts/
 │   ├── workbuddy_checkin.py           # 签到主脚本（长效令牌 / 短效令牌 / 文件，三通道）
 │   ├── gen_notify_config.py           # CI 环境从环境变量生成推送配置
@@ -233,7 +255,7 @@ python scripts/sync_token_to_github.py \
 
 | 通道 | 有效期 | 续期方式 |
 |---|---|---|
-| `WB_REFRESH_TOKEN`（长效令牌） | 约 60 天 | 重新登录客户端后，本机重跑 `python scripts/sync_token_to_github.py` |
+| `WB_REFRESH_TOKEN`（长效令牌） | 约 30 天 | 重新登录客户端后，本机重跑 `python scripts/sync_token_to_github.py` |
 | `WB_ACCESS_TOKEN`（短效令牌） | 约 2 个月 | 同上 |
 
 续期脚本会覆盖旧 Secret，无需其他操作。依赖「失败推送」通道即可在过期时收到提醒。
@@ -332,8 +354,13 @@ A：编辑 `.github/workflows/checkin.yml` 里的 `cron` 表达式即可（UTC �
 **Q：一直接收不到失败提醒？**
 A：检查是否配置了任一通知通道 Secret；否则失败只体现为 Actions 页面红灯与 GitHub 邮件。
 
+**Q：一天收到好几条通知，是不是跑了多次？**
+A：先分清通知是谁发的。常见构成是：外部定时器打一次 `workflow_dispatch`（成功）＋ 本仓库 `schedule` 迟到补跑（成功）＋ **另一个仓库 / 旧 fork 上的同名工作流**（令牌过期 → 失败）。
+排查方法：`gh api repos/<owner>/<repo>/actions/runs --jq '.workflow_runs[] | "\(.created_at) \(.name) \(.event) \(.conclusion)"'`，看同一分钟是否有两条记录来自不同仓库。
+真正的修复不是改代码，而是**把不再使用的仓库 / 工作流停掉**。
+
 **Q：前几周一直正常，突然不跑了？**
-A：两个常见原因：① 长效令牌过期（约 60 天），重跑 `sync_token_to_github.py` 续期；
+A：两个常见原因：① 长效令牌过期（约 30 天），重跑 `sync_token_to_github.py` 续期；
 ② GitHub 会对**连续 60 天无提交**的仓库自动停用定时工作流，到 Actions 页面手动 Run 一次即可恢复
 （本项目平时没有提交，这一条尤其容易中）。
 
